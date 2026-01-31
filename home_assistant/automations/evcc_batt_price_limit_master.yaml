@@ -206,6 +206,7 @@
             {% set prices = (today if today is not none else []) + (tomorrow if tomorrow is not none else []) %}
 
             {% set horizon_ts = now_ts + (lookahead_h * 3600) %}
+            {% set horizon_ts = (horizon_ts // (price_slot_h * 3600)) * (price_slot_h * 3600) %}
             {% set ns = namespace(future=[]) %}
             {% for p in prices %}
               {% if p.startsAt is defined and p.total is defined %}
