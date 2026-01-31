@@ -247,6 +247,9 @@
                   {% else %}
                     {% set sorted_prices = plist | sort %}
                     {% set selected = sorted_prices[0:slots_needed] %}
+                  {% if selected | length == 0 %}
+                    {{ off_price }}
+                  {% else %}
                     {% set limit_price = selected | max %}
 
                     {% set effective_price = limit_price / eff %}
