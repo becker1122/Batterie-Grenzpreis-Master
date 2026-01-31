@@ -23,10 +23,13 @@
     - platform: numeric_state
       entity_id: sensor.sn_3017439174_battery_soc_total
       above: 80
+      for:
+        minutes: 2
     - platform: numeric_state
       entity_id: sensor.sn_3017439174_battery_soc_total
       below: 80
-
+      for:
+        minutes: 2
     - platform: state
       entity_id:
         - input_boolean.evcc_batterie_automatik
