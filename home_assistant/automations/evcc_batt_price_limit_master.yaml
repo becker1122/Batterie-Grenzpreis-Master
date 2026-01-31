@@ -57,6 +57,7 @@
     max_cap: 0.31
     eff: 0.88
     target_soc_max: 80
+    target_soc_soft: 78.5
     grid_charge_kw: 9.0
     price_slot_h: 0.25
 
@@ -234,8 +235,8 @@
 
                 {% set needed_kwh = (avg_peak_w / 1000) * peak_window_h_default %}
                 {% set needed_soc = (needed_kwh / batt_kwh) * 100 if batt_kwh > 0 else 0 %}
-                {% set raw_target = [soc + needed_soc, soc_floor_eff | float(0)] | max %}
-                {% set target_soc = [raw_target, target_soc_max] | min %}
+                {% set cap = (target_soc_soft if soc >= (target_soc_max - 1) else target_soc_max) %}
+                {% set target_soc = [raw_target, cap] | min %}
                 {% set kwh_to_charge = ((target_soc - soc) / 100) * batt_kwh %}
 
                 {% if kwh_to_charge <= 0 %}
