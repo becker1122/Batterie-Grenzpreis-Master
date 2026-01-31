@@ -1,0 +1,28 @@
+# --- Home Assistant / EVCC: niemals committen ---
+secrets.yaml
+secrets.yaml.*
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.bak
+*.tmp
+*.old
+
+# HA runtime/storage
+.storage/
+tts/
+www/community/
+deps/
+custom_components/__pycache__/
+__pycache__/
+
+# Backups/Snapshots (optional)
+backups/
+snapshots/
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
