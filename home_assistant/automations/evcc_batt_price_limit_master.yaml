@@ -58,6 +58,7 @@
     eff: 0.88
     target_soc_max: 80
     grid_charge_kw: 9.0
+    price_slot_h: 0.25
 
     lookahead_h: 18
     expensive_q: 0.85
@@ -240,7 +241,7 @@
                 {% if kwh_to_charge <= 0 %}
                   {{ off_price }}
                 {% else %}
-                  {% set slots_needed = (kwh_to_charge / (grid_charge_kw * 0.25)) | round(0, 'ceil') | int %}
+                  {% set slots_needed = (kwh_to_charge / (grid_charge_kw * price_slot_h)) | round(0, 'ceil') | int %}
                   {% if slots_needed <= 0 %}
                     {{ off_price }}
                   {% else %}
