@@ -1,0 +1,441 @@
+- id: evcc_batt_price_limit_master
+  alias: "EVCC Batterie – Grenzpreis Master (Preisglättung wirtschaftlich + Peak + PV + Monatsziel)"
+  description: >
+    Setzt den EVCC Batterie-Grenzpreis (input_number.evcc_batt_price_limit) stabil & wirtschaftlich
+    und steuert zusätzlich eine Reserve-/Peak-Sperre über input_boolean.evcc_battery_no_discharge.
+  mode: single
+
+  trigger:
+    - platform: homeassistant
+      event: start
+
+    - platform: time
+      at: "00:05:00"
+    - platform: time
+      at: "13:05:00"
+
+    - platform: time_pattern
+      minutes: "/5"
+
+    - platform: state
+      entity_id: sensor.tibber_price_raw
+    - platform: state
+      entity_id: sensor.tibber_price_raw
+      attribute: tomorrow
+
+    - platform: numeric_state
+      entity_id: sensor.sn_3017439174_battery_soc_total
+      above: 80
+    - platform: numeric_state
+      entity_id: sensor.sn_3017439174_battery_soc_total
+      below: 80
+
+    - platform: state
+      entity_id:
+        - input_boolean.evcc_batterie_automatik
+        - input_boolean.evcc_battery_automatik
+
+    - platform: state
+      entity_id:
+        - sensor.pv_forecast_resttag_heute_gesamt
+        - sensor.pv_forecast_morgen_gesamt
+        - binary_sensor.pv_forecast_unplausibel_mittag_2000w
+
+    - platform: state
+      entity_id:
+        - input_number.evcc_batt_capacity_kwh
+        - input_number.evcc_batt_limit_min_delta_ct
+        - input_number.evcc_batt_limit_cooldown_min
+        - input_number.evcc_batt_price_limit
+
+    - platform: state
+      entity_id: input_boolean.evcc_battery_no_discharge
+
+  variables:
+    # ===== Fixwerte =====
+    off_price: 0.18
+    max_cap: 0.31
+    eff: 0.88
+    target_soc_max: 80
+    grid_charge_kw: 9.0
+
+    lookahead_h: 18
+    expensive_q: 0.85
+
+    min_saving: 0.007
+    min_profit_eur: 0.06
+
+    # Peak/Reserve
+    peak_window_h_default: 3
+    avg_peak_w: 1700
+    must_keep_kwh: 2.0
+    reserve_hyst_kwh: 0.3
+
+    spike_min_ct: 1.2
+    spike_sigma_factor: 0.8
+    reserve_bonus_ct: 0.8
+
+    # PV-Forecast Dämpfung
+    pv_today_factor: 0.35
+    pv_tomorrow_factor: 0.20
+    pv_margin: 1.10
+
+    drip_w_fallback: 500
+    drip_w_min: 300
+    drip_w_max: 2500
+
+    # Monatsziel (Bias)
+    target_month_avg: 0.29
+    band_yellow: 0.30
+    band_red: 0.31
+    soc_floor_green: 25
+    soc_floor_yellow: 35
+    soc_floor_red: 45
+    must_keep_kwh_yellow: 2.5
+    must_keep_kwh_red: 3.0
+    min_profit_eur_yellow: 0.05
+    min_profit_eur_red: 0.04
+
+    # ===== Livewerte =====
+    automatik_an: >-
+      {{ is_state('input_boolean.evcc_battery_automatik','on')
+         or is_state('input_boolean.evcc_batterie_automatik','on') }}
+
+    soc_raw: "{{ states('sensor.sn_3017439174_battery_soc_total') }}"
+    soc_valid: "{{ soc_raw not in ['unknown','unavailable','none',''] }}"
+    soc: "{{ soc_raw | float(0) }}"
+    now_ts: "{{ as_timestamp(now()) }}"
+
+    batt_kwh: "{{ states('input_number.evcc_batt_capacity_kwh') | float(16.6) }}"
+
+    pv_now_w: "{{ states('sensor.pv_power_total') | float(0) }}"
+    pv_plausibility_ok: "{{ is_state('binary_sensor.pv_forecast_unplausibel_mittag_2000w', 'off') }}"
+    pv_today_remaining: "{{ (states('sensor.pv_forecast_resttag_heute_gesamt') | float(0)) * pv_today_factor }}"
+    pv_tomorrow_total: "{{ (states('sensor.pv_forecast_morgen_gesamt') | float(0)) * pv_tomorrow_factor }}"
+
+  action:
+    # 0) Automatik AUS -> nichts anfassen
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: "{{ not automatik_an }}"
+          sequence:
+            - stop: "Automatik AUS -> keine Änderungen"
+
+    # 0b) SoC ungültig -> nichts schalten
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: "{{ not soc_valid }}"
+          sequence:
+            - stop: "SoC ungültig -> keine Änderungen"
+
+    # 0c) Optional: manuelle Hold-Betätigung als Override -> Automatik AUS
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: >-
+                {{ trigger is defined
+                   and trigger.platform == 'state'
+                   and trigger.entity_id == 'input_boolean.evcc_battery_no_discharge'
+                   and trigger.to_state is not none
+                   and trigger.to_state.context is not none
+                   and trigger.to_state.context.user_id is not none }}
+          sequence:
+            - choose:
+                - conditions:
+                    - condition: template
+                      value_template: "{{ states('input_boolean.evcc_batterie_automatik') not in ['unknown','unavailable','none',''] }}"
+                  sequence:
+                    - service: input_boolean.turn_off
+                      target: { entity_id: input_boolean.evcc_batterie_automatik }
+                - conditions:
+                    - condition: template
+                      value_template: "{{ states('input_boolean.evcc_battery_automatik') not in ['unknown','unavailable','none',''] }}"
+                  sequence:
+                    - service: input_boolean.turn_off
+                      target: { entity_id: input_boolean.evcc_battery_automatik }
+            - stop: "Manuelle HOLD-Sperre -> Automatik deaktiviert (Override)"
+
+    # 1) Monats-Bias (nur lesen)
+    - variables:
+        month_kwh: "{{ states('sensor.netzbezug_monat_v7') | float(0) }}"
+        month_cost_eur: "{{ states('sensor.kosten_netzbezug_monat_v7') | float(0) }}"
+        month_avg_price: >-
+          {% if month_kwh > 30 and month_cost_eur > 5 %}
+            {{ (month_cost_eur / month_kwh) | round(4) }}
+          {% else %}
+            0
+          {% endif %}
+        month_stage: >-
+          {% if month_kwh <= 30 or month_cost_eur <= 5 %}
+            init
+          {% elif month_avg_price <= target_month_avg %}
+            green
+          {% elif month_avg_price <= band_yellow %}
+            yellow
+          {% else %}
+            red
+          {% endif %}
+        soc_floor_eff: >-
+          {% if month_stage == 'red' %} {{ soc_floor_red }}
+          {% elif month_stage == 'yellow' %} {{ soc_floor_yellow }}
+          {% else %} {{ soc_floor_green }}
+          {% endif %}
+        must_keep_kwh_eff: >-
+          {% if month_stage == 'red' %} {{ must_keep_kwh_red }}
+          {% elif month_stage == 'yellow' %} {{ must_keep_kwh_yellow }}
+          {% else %} {{ must_keep_kwh }}
+          {% endif %}
+        min_profit_eur_eff: >-
+          {% if month_stage == 'red' %} {{ min_profit_eur_red }}
+          {% elif month_stage == 'yellow' %} {{ min_profit_eur_yellow }}
+          {% else %} {{ min_profit_eur }}
+          {% endif %}
+
+    # 2) Grenzpreis berechnen (WICHTIG: new_limit zuerst!)
+    - variables:
+        new_limit: >
+          {% if soc >= target_soc_max %}
+            {{ off_price }}
+          {% else %}
+            {% set today = state_attr('sensor.tibber_price_raw','today') %}
+            {% set tomorrow = state_attr('sensor.tibber_price_raw','tomorrow') %}
+            {% set prices = (today if today is not none else []) + (tomorrow if tomorrow is not none else []) %}
+
+            {% set horizon_ts = now_ts + (lookahead_h * 3600) %}
+            {% set ns = namespace(future=[]) %}
+            {% for p in prices %}
+              {% set st = as_timestamp(p.startsAt) %}
+              {% if st is not none and st >= now_ts and st <= horizon_ts %}
+                {% set ns.future = ns.future + [p] %}
+              {% endif %}
+            {% endfor %}
+
+            {% if (ns.future | length) < 4 %}
+              {{ off_price }}
+            {% else %}
+              {% set plist = ns.future | map(attribute='total') | map('float') | list %}
+              {% set sorted_all = plist | sort %}
+              {% set n = (sorted_all | length) %}
+              {% set qi = (n * expensive_q) | round(0,'floor') | int %}
+              {% set qi = [0, [qi, n-1] | min] | max %}
+              {% set expensive_ref = sorted_all[qi] %}
+
+              {% set needed_kwh = (avg_peak_w / 1000) * peak_window_h_default %}
+              {% set needed_soc = (needed_kwh / batt_kwh) * 100 if batt_kwh > 0 else 0 %}
+              {% set raw_target = [soc + needed_soc, soc_floor_eff | float(0)] | max %}
+              {% set target_soc = [raw_target, target_soc_max] | min %}
+              {% set kwh_to_charge = ((target_soc - soc) / 100) * batt_kwh %}
+
+              {% if kwh_to_charge <= 0 %}
+                {{ off_price }}
+              {% else %}
+                {% set slots_needed = (kwh_to_charge / (grid_charge_kw * 0.25)) | round(0, 'ceil') | int %}
+                {% if slots_needed <= 0 %}
+                  {{ off_price }}
+                {% else %}
+                  {% set hour = now().hour %}
+                  {% set allow_forecast_block = (pv_plausibility_ok and hour >= 10 and pv_now_w >= 2000) %}
+                  {% set pv_before = pv_today_remaining + pv_tomorrow_total %}
+
+                  {% if allow_forecast_block and pv_before >= (kwh_to_charge * pv_margin) %}
+                    {{ off_price }}
+                  {% else %}
+                    {% set sorted_prices = plist | sort %}
+                    {% set selected = sorted_prices[0:slots_needed] %}
+                    {% set limit_price = selected | max %}
+
+                    {% set effective_price = limit_price / eff %}
+                    {% set saving_ok = (expensive_ref - effective_price) >= min_saving %}
+                    {% set expected_profit = (expensive_ref - effective_price) * kwh_to_charge %}
+                    {% set profit_ok = expected_profit >= (min_profit_eur_eff | float(0)) %}
+
+                    {% if (limit_price > max_cap) or (not saving_ok) or (not profit_ok) %}
+                      {{ off_price }}
+                    {% else %}
+                      {{ [limit_price, off_price] | max | round(3) }}
+                    {% endif %}
+                  {% endif %}
+                {% endif %}
+              {% endif %}
+            {% endif %}
+          {% endif %}
+
+    # 2b) Jetzt erst Delta/Cooldown/Write entscheiden (new_limit ist jetzt definiert)
+    - variables:
+        current_limit: "{{ states('input_number.evcc_batt_price_limit') | float(0) }}"
+        cooldown_min: "{{ states('input_number.evcc_batt_limit_cooldown_min') | int(1) }}"
+        min_delta_eur: "{{ (states('input_number.evcc_batt_limit_min_delta_ct') | float(0.2)) / 100 }}"
+        last_set_state: "{{ states('input_datetime.evcc_batt_limit_last_set') }}"
+        last_set_ts: "{{ as_timestamp(last_set_state) if last_set_state not in ['unknown','unavailable','none',''] else 0 }}"
+        can_time: "{{ (now_ts - last_set_ts) >= (cooldown_min * 60) }}"
+        can_delta: "{{ ((new_limit | float(0)) - (current_limit | float(0))) | abs >= (min_delta_eur | float(0)) }}"
+        force_stop: >-
+          {{ (soc | float(0)) >= (target_soc_max | float(80))
+             and (current_limit | float(0)) > (off_price + 0.001) }}
+        should_update: "{{ force_stop or (can_time and can_delta) }}"
+
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: "{{ should_update }}"
+          sequence:
+            - service: input_number.set_value
+              target: { entity_id: input_number.evcc_batt_price_limit }
+              data:
+                value: "{{ new_limit | float(0) }}"
+            - service: input_datetime.set_datetime
+              target: { entity_id: input_datetime.evcc_batt_limit_last_set }
+              data:
+                datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+    # 3) Peak/Reserve HOLD (gelatched ohne Extra-Helper)
+    - variables:
+        current_price: "{{ states('sensor.tibber_price_raw') | float(0) }}"
+        grid_charge_active: "{{ (states('input_number.evcc_batt_price_limit') | float(0)) > (off_price + 0.001) }}"
+        lock_current: "{{ is_state('input_boolean.evcc_battery_no_discharge','on') }}"
+
+        today2: "{{ state_attr('sensor.tibber_price_raw','today') if state_attr('sensor.tibber_price_raw','today') is not none else [] }}"
+        tomorrow2: "{{ state_attr('sensor.tibber_price_raw','tomorrow') if state_attr('sensor.tibber_price_raw','tomorrow') is not none else [] }}"
+        all2: "{{ today2 + tomorrow2 }}"
+        horizon_ts2: "{{ now_ts + (lookahead_h * 3600) }}"
+
+        plist2: >-
+          {% set ns = namespace(p=[]) %}
+          {% for it in all2 %}
+            {% set st = as_timestamp(it.startsAt) %}
+            {% if st is not none and st >= now_ts and st <= horizon_ts2 %}
+              {% set ns.p = ns.p + [ (it.total | float(0)) ] %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.p }}
+
+        have_prices2: "{{ (plist2 | length) > 6 }}"
+        future_max2: "{{ (plist2 | max) if have_prices2 else 0 }}"
+
+        sigma: >-
+          {% if not have_prices2 %}
+            0
+          {% else %}
+            {% set n = plist2|length %}
+            {% set mean = (plist2|sum) / n %}
+            {% set ns = namespace(v=0) %}
+            {% for x in plist2 %}
+              {% set ns.v = ns.v + ((x-mean)*(x-mean)) %}
+            {% endfor %}
+            {{ (ns.v / n) ** 0.5 }}
+          {% endif %}
+
+        spike_eur: "{{ [ (spike_min_ct/100), (sigma * spike_sigma_factor) ] | max }}"
+
+        expensive_ref2: >-
+          {% if not have_prices2 %}
+            999
+          {% else %}
+            {% set s = (plist2 | sort) %}
+            {% set n = s | length %}
+            {% set qi = (n * expensive_q) | round(0,'floor') | int %}
+            {% set qi = [0, [qi, n-1] | min] | max %}
+            {{ s[qi] | float(0) }}
+          {% endif %}
+
+        peak_expected: "{{ have_prices2 and ((future_max2 - current_price) >= spike_eur) }}"
+
+        peak_ts: >-
+          {% if not have_prices2 %}
+            0
+          {% else %}
+            {% set ns = namespace(t=0) %}
+            {% for it in all2 %}
+              {% set st = as_timestamp(it.startsAt) %}
+              {% if st is not none and st >= now_ts and st <= horizon_ts2 and (it.total|float(0)) >= expensive_ref2 and ns.t == 0 %}
+                {% set ns.t = st %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.t }}
+          {% endif %}
+
+        hours_to_peak: >-
+          {% if peak_ts | float(0) > 0 %}
+            {{ ((peak_ts | float(0)) - now_ts) / 3600 }}
+          {% else %}
+            0
+          {% endif %}
+
+        eigen_w: "{{ states('sensor.eigenverbrauch') | float(0) }}"
+        batt_p: "{{ states('sensor.battery_power_w') | float(0) }}"
+        house_w: "{{ (eigen_w | float(0)) + (batt_p | float(0)) }}"
+        drip_w: >-
+          {% set w = (house_w | float(0)) %}
+          {% if w <= 0 %}
+            {{ drip_w_fallback }}
+          {% else %}
+            {{ [drip_w_min, [w, drip_w_max] | min] | max }}
+          {% endif %}
+
+        drip_kwh: "{{ (drip_w/1000) * (hours_to_peak | float(0)) }}"
+        peak_kwh: "{{ (avg_peak_w/1000) * peak_window_h_default }}"
+        reserve_kwh_needed: "{{ drip_kwh + peak_kwh }}"
+
+        soc_at_peak: "{{ soc - ((drip_kwh / batt_kwh) * 100) if batt_kwh > 0 else soc }}"
+        soc_needed_for_peak: "{{ (peak_kwh / batt_kwh) * 100 if batt_kwh > 0 else 0 }}"
+        soc_kwh: "{{ (soc/100) * batt_kwh }}"
+
+        reserve_floor_hold: >-
+          {{ (soc_kwh | float(0)) <= (must_keep_kwh_eff | float(0))
+             or (lock_current and (soc_kwh | float(0)) <= ((must_keep_kwh_eff | float(0)) + reserve_hyst_kwh)) }}
+
+        pv_before2: "{{ pv_today_remaining + pv_tomorrow_total }}"
+        pv_covers_reserve: "{{ pv_plausibility_ok and (pv_before2 >= (reserve_kwh_needed * pv_margin)) }}"
+
+        in_expensive_now_release: "{{ have_prices2 and (current_price >= expensive_ref2) }}"
+        in_expensive_now_block: "{{ have_prices2 and (current_price >= (expensive_ref2 - 0.002)) }}"
+
+        expensive_now_min: "{{ current_price >= (off_price + reserve_bonus_ct/100) }}"
+        reserve_needed: "{{ (soc_at_peak | float(0)) < (soc_needed_for_peak | float(0)) }}"
+
+        lock_raw: >-
+          {{ peak_expected
+             and (hours_to_peak | float(0)) > 0
+             and (not in_expensive_now_block)
+             and expensive_now_min
+             and (reserve_floor_hold or reserve_needed) }}
+
+        # GELATCHT (ohne extra Helper):
+        # - wenn HOLD schon an ist -> bleibt an, bis ein klarer Release eintritt
+        lock_target_bool: >-
+          {% if not automatik_an %}
+            {{ lock_current }}
+          {% elif grid_charge_active %}
+            false
+          {% elif not have_prices2 %}
+            false
+          {% elif (peak_ts | float(0)) <= 0 %}
+            false
+          {% elif in_expensive_now_release %}
+            false
+          {% elif (hours_to_peak | float(0)) <= 0 %}
+            false
+          {% elif pv_covers_reserve %}
+            false
+          {% elif lock_current %}
+            true
+          {% else %}
+            {{ lock_raw }}
+          {% endif %}
+
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: "{{ (lock_target_bool | bool) and (not lock_current) }}"
+          sequence:
+            - service: input_boolean.turn_on
+              target: { entity_id: input_boolean.evcc_battery_no_discharge }
+
+        - conditions:
+            - condition: template
+              value_template: "{{ (not (lock_target_bool | bool)) and lock_current }}"
+          sequence:
+            - service: input_boolean.turn_off
+              target: { entity_id: input_boolean.evcc_battery_no_discharge }
