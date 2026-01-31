@@ -219,54 +219,59 @@
                 | map(attribute='total')
                 | map('float')
                 | list %}
-              {% set sorted_all = plist | sort %}
-              {% set n = (sorted_all | length) %}
-              {% set qi = (n * expensive_q) | round(0,'floor') | int %}
-              {% set qi = [0, [qi, n-1] | min] | max %}
-              {% set expensive_ref = sorted_all[qi] %}
-
-              {% set needed_kwh = (avg_peak_w / 1000) * peak_window_h_default %}
-              {% set needed_soc = (needed_kwh / batt_kwh) * 100 if batt_kwh > 0 else 0 %}
-              {% set raw_target = [soc + needed_soc, soc_floor_eff | float(0)] | max %}
-              {% set target_soc = [raw_target, target_soc_max] | min %}
-              {% set kwh_to_charge = ((target_soc - soc) / 100) * batt_kwh %}
-
-              {% if kwh_to_charge <= 0 %}
+              {% if plist | length == 0 %}
                 {{ off_price }}
               {% else %}
-                {% set slots_needed = (kwh_to_charge / (grid_charge_kw * 0.25)) | round(0, 'ceil') | int %}
-                {% if slots_needed <= 0 %}
+                {% set sorted_all = plist | sort %}
+                {% set n = (sorted_all | length) %}
+                {% set qi = (n * expensive_q) | round(0,'floor') | int %}
+                {% set qi = [0, [qi, n-1] | min] | max %}
+                {% set expensive_ref = sorted_all[qi] %}
+
+                {% set needed_kwh = (avg_peak_w / 1000) * peak_window_h_default %}
+                {% set needed_soc = (needed_kwh / batt_kwh) * 100 if batt_kwh > 0 else 0 %}
+                {% set raw_target = [soc + needed_soc, soc_floor_eff | float(0)] | max %}
+                {% set target_soc = [raw_target, target_soc_max] | min %}
+                {% set kwh_to_charge = ((target_soc - soc) / 100) * batt_kwh %}
+
+                {% if kwh_to_charge <= 0 %}
                   {{ off_price }}
                 {% else %}
-                  {% set hour = now().hour %}
-                  {% set allow_forecast_block = (pv_plausibility_ok and hour >= 10 and pv_now_w >= 2000) %}
-                  {% set pv_before = pv_today_remaining + pv_tomorrow_total %}
-
-                  {% if allow_forecast_block and pv_before >= (kwh_to_charge * pv_margin) %}
+                  {% set slots_needed = (kwh_to_charge / (grid_charge_kw * 0.25)) | round(0, 'ceil') | int %}
+                  {% if slots_needed <= 0 %}
                     {{ off_price }}
                   {% else %}
-                    {% set sorted_prices = plist | sort %}
-                    {% set selected = sorted_prices[0:slots_needed] %}
-                  {% if selected | length == 0 %}
-                    {{ off_price }}
-                  {% else %}
-                    {% set limit_price = selected | max %}
+                    {% set hour = now().hour %}
+                    {% set allow_forecast_block = (pv_plausibility_ok and hour >= 10 and pv_now_w >= 2000) %}
+                    {% set pv_before = pv_today_remaining + pv_tomorrow_total %}
 
-                    {% set effective_price = limit_price / eff %}
-                    {% set saving_ok = (expensive_ref - effective_price) >= min_saving %}
-                    {% set expected_profit = (expensive_ref - effective_price) * kwh_to_charge %}
-                    {% set profit_ok = expected_profit >= (min_profit_eur_eff | float(0)) %}
-
-                    {% if (limit_price > max_cap) or (not saving_ok) or (not profit_ok) %}
+                    {% if allow_forecast_block and pv_before >= (kwh_to_charge * pv_margin) %}
                       {{ off_price }}
                     {% else %}
-                      {{ [limit_price, off_price] | max | round(3) }}
+                      {% set sorted_prices = plist | sort %}
+                      {% set selected = sorted_prices[0:slots_needed] %}
+
+                      {% if selected | length == 0 %}
+                        {{ off_price }}
+                      {% else %}
+                        {% set limit_price = selected | max %}
+
+                        {% set effective_price = limit_price / eff %}
+                        {% set saving_ok = (expensive_ref - effective_price) >= min_saving %}
+                        {% set expected_profit = (expensive_ref - effective_price) * kwh_to_charge %}
+                        {% set profit_ok = expected_profit >= (min_profit_eur_eff | float(0)) %}
+
+                        {% if (limit_price > max_cap) or (not saving_ok) or (not profit_ok) %}
+                          {{ off_price }}
+                        {% else %}
+                          {{ [limit_price, off_price] | max | round(3) }}
+                        {% endif %}
+                      {% endif %}
                     {% endif %}
                   {% endif %}
                 {% endif %}
               {% endif %}
             {% endif %}
-          {% endif %}
 
     # 2b) Jetzt erst Delta/Cooldown/Write entscheiden (new_limit ist jetzt definiert)
     - variables:
