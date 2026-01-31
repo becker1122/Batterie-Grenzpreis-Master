@@ -214,7 +214,11 @@
             {% if (ns.future | length) < 4 %}
               {{ off_price }}
             {% else %}
-              {% set plist = ns.future | map(attribute='total') | map('float') | list %}
+              {% set plist = ns.future
+                | selectattr('total','defined')
+                | map(attribute='total')
+                | map('float')
+                | list %}
               {% set sorted_all = plist | sort %}
               {% set n = (sorted_all | length) %}
               {% set qi = (n * expensive_q) | round(0,'floor') | int %}
