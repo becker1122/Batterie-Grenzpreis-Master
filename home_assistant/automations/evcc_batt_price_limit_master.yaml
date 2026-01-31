@@ -306,6 +306,14 @@
               target: { entity_id: input_datetime.evcc_batt_limit_last_set }
               data:
                 datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+            - service: logbook.log
+              data:
+                name: EVCC Grenzpreis Master
+                message: >-
+                  Grenzpreis -> {{ new_limit | float(0) }} (alt {{ current_limit | float(0) }}),
+                  SoC={{ soc | round(1) }}%,
+                  Slot={{ price_slot_h if price_slot_h is defined else 0.25 }}h,
+                  Monat={{ month_stage if month_stage is defined else 'n/a' }}
 
     # 3) Peak/Reserve HOLD (gelatched ohne Extra-Helper)
     - variables:
