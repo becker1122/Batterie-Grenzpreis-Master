@@ -315,9 +315,11 @@
         plist2: >-
           {% set ns = namespace(p=[]) %}
           {% for it in all2 %}
-            {% set st = as_timestamp(it.startsAt) %}
-            {% if st is not none and st >= now_ts and st <= horizon_ts2 %}
-              {% set ns.p = ns.p + [ (it.total | float(0)) ] %}
+            {% if it.startsAt is defined and it.total is defined %}
+              {% set st = as_timestamp(it.startsAt) %}
+              {% if st is not none and st >= now_ts and st <= horizon_ts2 %}
+                {% set ns.p = ns.p + [ (it.total | float(0)) ] %}
+              {% endif %}
             {% endif %}
           {% endfor %}
           {{ ns.p }}
