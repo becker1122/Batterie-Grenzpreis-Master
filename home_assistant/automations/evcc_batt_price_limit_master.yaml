@@ -12,7 +12,7 @@
 # Remove redundant fixed time triggers
 
     - platform: time_pattern
-      minutes: "0,15,30,45"
+      minutes: "/15"
 
     - platform: state
       entity_id: sensor.tibber_price_raw
