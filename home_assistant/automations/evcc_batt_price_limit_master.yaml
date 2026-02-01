@@ -212,7 +212,7 @@
               {% if p.startsAt is defined and p.total is defined %}
                 {% set st = as_timestamp(p.startsAt) %}
                 {% if st is not none and st >= now_ts and st <= horizon_ts %}
-                   {% set ns.future = ns.future + [p] %}
+                  {% set ns.future = ns.future + [p] %}
                 {% endif %}
               {% endif %}
             {% endfor %}
@@ -279,7 +279,8 @@
                 {% endif %}
               {% endif %}
             {% endif %}
-
+          {% endif %}    
+          
     # 2b) Jetzt erst Delta/Cooldown/Write entscheiden (new_limit ist jetzt definiert)
     - variables:
         current_limit: "{{ states('input_number.evcc_batt_price_limit') | float(0) }}"
